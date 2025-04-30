@@ -111,6 +111,15 @@ class AlertConsumer:
 
         self.instrument = kwargs.pop("instrument", "ZTF")
 
+        self.schemaless = kwargs.pop("schemaless", False)
+        self.avro_schema_file = kwargs.pop("avro_schema_file", None)
+        if self.schemaless:
+            if self.avro_schema_file is None:
+                raise ValueError( "avro_schema_file required when running with schemaless=True" )
+            self.avro_schema = fastavro.schema.parse_schema( fastavro.schema.load_schema( self.avro_schema_file ) )
+        else:
+            self.avro_schema = None
+
         self.dask_client = dask_client
 
         # keep track of disconnected partitions
@@ -182,18 +191,21 @@ class AlertConsumer:
         log("Finished AlertConsumer setup")
 
     @staticmethod
-    def read_schema_data(bytes_io):
+    def read_schema_data(bytes_io, schema):
         """Read data that already has an Avro schema.
 
         :param bytes_io: `_io.BytesIO` Data to be decoded.
         :return: `dict` Decoded data.
         """
         bytes_io.seek(0)
-        message = fastavro.reader(bytes_io)
+        if schema is None:
+            message = fastavro.reader(bytes_io)
+        else:
+            message = fastavro.schemaless_reader(bytes_io, schema)
         return message
 
     @classmethod
-    def decode_message(cls, msg):
+    def decode_message(cls, msg, schema=None):
         """
         Decode Avro message according to a schema.
 
@@ -205,7 +217,7 @@ class AlertConsumer:
 
         try:
             bytes_io = io.BytesIO(message)
-            decoded_msg = cls.read_schema_data(bytes_io)
+            decoded_msg = cls.read_schema_data(bytes_io, schema)
         except AssertionError:
             decoded_msg = None
         except IndexError:
@@ -266,7 +278,7 @@ class AlertConsumer:
             try:
                 # decode avro packet
                 with timer("Decoding alert", self.verbose > 1):
-                    msg_decoded = self.decode_message(msg)
+                    msg_decoded = self.decode_message(msg, schema=self.schema)
 
                 for record in msg_decoded:
                     if (
